@@ -43,6 +43,8 @@ import org.dspace.authorize.ResourcePolicy;
 import org.dspace.authorize.service.AuthorizeService;
 import org.dspace.authorize.service.ResourcePolicyService;
 import org.dspace.content.*;
+import org.dspace.content.authority.Choices;
+import org.dspace.content.authority.service.MetadataAuthorityService;
 import org.dspace.content.Collection;
 import org.dspace.content.service.*;
 import org.dspace.core.ConfigurationManager;
@@ -111,6 +113,8 @@ public class ItemImportServiceImpl implements ItemImportService, InitializingBea
     protected MetadataFieldService metadataFieldService;
     @Autowired(required = true)
     protected MetadataSchemaService metadataSchemaService;
+    @Autowired(required = true)
+    protected MetadataAuthorityService metadataAuthorityService;
     @Autowired(required = true)
     protected ResourcePolicyService resourcePolicyService;
     @Autowired(required = true)
@@ -718,11 +722,43 @@ public class ItemImportServiceImpl implements ItemImportService, InitializingBea
         {
             language = language.trim();
         }
+        // check for authority control of the metadata value
+        String fieldKey = metadataAuthorityService.makeFieldKey(schema, element, qualifier);
+        boolean authorityControlled = metadataAuthorityService.isAuthorityControlled(fieldKey);
+        boolean authorityValueReceived = false;
+        String authority = getAttributeValue(n, "authority");
+        int confidence = Choices.CF_UNSET;
+        if (authority != null && !"".equals(authority))
+        {
+            authorityValueReceived = true;
+            authority = authority.trim();
+
+            String confidenceStr = getAttributeValue(n, "confidence");
+            if (confidenceStr != null && !"".equals(confidenceStr))
+            {
+                confidence = Choices.getConfidenceValue(confidenceStr);
+            }
+        }
+
 
         if (!isQuiet)
         {
-            System.out.println("\tSchema: " + schema + " Element: " + element + " Qualifier: " + qualifier
-                    + " Value: " + value);
+            if (authorityValueReceived) {
+                System.out.println("\tSchema: " + schema + " Element: " + element + " Qualifier: " + qualifier
+                        + " Value: " + value + " Authority: " + authority + " Confidence: " + Choices.getConfidenceText(confidence));
+
+                // check for authority control of the metadata value
+                // warn here only if not in testing mode. In testing mode, warning will be given regardless isQuiet
+                if (!authorityControlled && !isTest)
+                {
+                    System.out.println("\tWARNING: " + schema + "." + "element" + "." + qualifier + " is not authority controlled in the configuration, but a value has been received. Authority value will not be saved. Please review your input file and/or DSpace configuration.");
+                }
+            }
+            else
+            {
+                System.out.println("\tSchema: " + schema + " Element: " + element + " Qualifier: " + qualifier
+                        + " Value: " + value);
+            }
         }
 
         if ("none".equals(qualifier) || "".equals(qualifier))
@@ -732,7 +768,14 @@ public class ItemImportServiceImpl implements ItemImportService, InitializingBea
 
         if (!isTest)
         {
-            itemService.addMetadata(c, i, schema, element, qualifier, language, value);
+            if (authorityValueReceived)
+            {
+                itemService.addMetadata(c, i, schema, element, qualifier, language, value, authority, confidence);
+            }
+            else
+            { // if not received, we fall back to the system mechanism to determine if we already have a matching authority entry.
+                itemService.addMetadata(c, i, schema, element, qualifier, language, value);
+            }
         }
         else
         {
@@ -751,6 +794,12 @@ public class ItemImportServiceImpl implements ItemImportService, InitializingBea
         	{
         		System.out.println("ERROR: Metadata field: '"+schema+"."+element+"."+qualifier+"' was not found in the registry.");
         		return;
+                }
+
+            // check for authority control of the metadata value
+            if (authorityValueReceived && !authorityControlled)
+            {
+                System.out.println("\tWARNING: " + schema + "." + "element" + "." + qualifier + " is not authority controlled in the configuration, but a value has been received. Authority value will not be saved. Please review your input file and/or DSpace configuration.");
             }
         }
     }
